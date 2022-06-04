@@ -2,6 +2,8 @@ package http
 
 import (
 	"context"
+	"errors"
+	"io"
 	"os"
 	"strings"
 	"testing"
@@ -18,6 +20,30 @@ func TestNew(t *testing.T) {
 
 	err := check(context.Background())
 	require.NoError(t, err)
+}
+
+func TestCheckResponseNoError(t *testing.T) {
+	check := New(Config{
+		URL: getURL(t),
+		CheckResponse: func(r io.ReadCloser) error {
+			return nil
+		},
+	})
+
+	err := check(context.Background())
+	require.NoError(t, err)
+}
+
+func TestCheckResponseError(t *testing.T) {
+	check := New(Config{
+		URL: getURL(t),
+		CheckResponse: func(r io.ReadCloser) error {
+			return errors.New("response is not healthy")
+		},
+	})
+
+	err := check(context.Background())
+	require.Error(t, err)
 }
 
 func getURL(t *testing.T) string {
