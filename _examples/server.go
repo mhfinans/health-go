@@ -3,17 +3,30 @@ package main
 import (
 	"context"
 	"errors"
+	"github.com/mhfinans/health-go"
+	healthHttp "github.com/mhfinans/health-go/checks/http"
+	healthKafka "github.com/mhfinans/health-go/checks/kafka"
+	healthMysql "github.com/mhfinans/health-go/checks/mysql"
+	healthPg "github.com/mhfinans/health-go/checks/postgres"
 	"net/http"
 	"time"
-
-	"github.com/hellofresh/health-go/v4"
-	healthHttp "github.com/hellofresh/health-go/v4/checks/http"
-	healthMySql "github.com/hellofresh/health-go/v4/checks/mysql"
-	healthPg "github.com/hellofresh/health-go/v4/checks/postgres"
 )
 
 func main() {
 	h, _ := health.New()
+	// custom kafka check example
+	h.Register(health.Config{
+		Name:      "kafka",
+		Timeout:   time.Second * 60,
+		SkipOnErr: false,
+		Check: healthKafka.New(healthKafka.Config{
+			Bootstrap:   []string{"127.0.0.1:9092"},
+			Version:     "2.8.0",
+			ServiceName: "test",
+			Timeout:     time.Second * 60,
+		}),
+	})
+
 	// custom health check example (fail)
 	h.Register(health.Config{
 		Name:      "some-custom-check-fail",
@@ -48,17 +61,17 @@ func main() {
 		}),
 	})
 
-	// mysql health check example
+	//// mysql health check example
 	h.Register(health.Config{
 		Name:      "mysql-check",
 		Timeout:   time.Second * 5,
 		SkipOnErr: true,
-		Check: healthMySql.New(healthMySql.Config{
+		Check: healthMysql.New(healthMysql.Config{
 			DSN: `test:test@tcp(0.0.0.0:32778)/test?charset=utf8`,
 		}),
 	})
 
-	// rabbitmq aliveness test example.
+	// rabbitmq liveness test example.
 	// Use it if your app has access to RabbitMQ management API.
 	// This endpoint declares a test queue, then publishes and consumes a message. Intended for use by monitoring tools. If everything is working correctly, will return HTTP status 200.
 	// As the default virtual host is called "/", this will need to be encoded as "%2f".
@@ -71,6 +84,7 @@ func main() {
 		}),
 	})
 
-	http.Handle("/status", h.Handler())
+	http.Handle("/liveness", h.LivenessHandler())
+	http.Handle("/readiness", h.ReadinessHandler())
 	http.ListenAndServe(":3000", nil)
 }

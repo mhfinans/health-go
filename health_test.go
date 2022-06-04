@@ -90,7 +90,7 @@ func TestHealthHandler(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	handler := h.Handler()
+	handler := h.ReadinessHandler()
 	handler.ServeHTTP(res, req)
 
 	assert.Equal(t, http.StatusOK, res.Code, "status handler returned wrong status code")

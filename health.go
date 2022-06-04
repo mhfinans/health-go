@@ -15,6 +15,8 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
+type IsOK bool
+
 // Status type represents health status
 type Status string
 
@@ -42,14 +44,22 @@ type (
 		Check CheckFunc
 	}
 
+	ServiceStatus struct {
+		IsOk      bool   `json:"is_ok"`
+		Message   string `json:"message"`
+		Skippable bool   `json:"skippable"`
+	}
+
 	// Check represents the health check response.
 	Check struct {
+		// IsOK tells if all non-skippable services are ok.
+		IsOK IsOK `json:"is_service_ok"`
 		// Status is the check status.
 		Status Status `json:"status"`
 		// Timestamp is the time in which the check occurred.
 		Timestamp time.Time `json:"timestamp"`
-		// Failures holds the failed checks along with their messages.
-		Failures map[string]string `json:"failures,omitempty"`
+		// Services holds the checks along with their messages.
+		Services map[string]ServiceStatus `json:"service"`
 		// System holds information of the go process.
 		System `json:"system"`
 	}
@@ -66,6 +76,10 @@ type (
 		HeapObjectsCount int `json:"heap_objects_count"`
 		// TotalAllocBytes is the bytes allocated and not yet freed.
 		AllocBytes int `json:"alloc_bytes"`
+	}
+
+	Liveness struct {
+		IsOK IsOK `json:"is_service_ok"`
 	}
 
 	// Health is the health-checks container
@@ -122,13 +136,29 @@ func (h *Health) Register(c Config) error {
 	return nil
 }
 
-// Handler returns an HTTP handler (http.HandlerFunc).
-func (h *Health) Handler() http.Handler {
-	return http.HandlerFunc(h.HandlerFunc)
+func (h *Health) LivenessHandler() http.Handler {
+	return http.HandlerFunc(h.LivenessHandlerFunc)
 }
 
-// HandlerFunc is the HTTP handler function.
-func (h *Health) HandlerFunc(w http.ResponseWriter, r *http.Request) {
+func (h *Health) LivenessHandlerFunc(w http.ResponseWriter, r *http.Request) {
+	c := Liveness{IsOK: true}
+	data, err := json.Marshal(c)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+	w.Write(data)
+}
+
+// ReadinessHandler returns an readiness HTTP handler (http.HandlerFunc).
+func (h *Health) ReadinessHandler() http.Handler {
+	return http.HandlerFunc(h.ReadinessHandlerFunc)
+}
+
+// ReadinessHandlerFunc is the readiness HTTP handler function.
+func (h *Health) ReadinessHandlerFunc(w http.ResponseWriter, r *http.Request) {
 	c := h.Measure(r.Context())
 
 	w.Header().Set("Content-Type", "application/json")
@@ -141,8 +171,9 @@ func (h *Health) HandlerFunc(w http.ResponseWriter, r *http.Request) {
 
 	code := http.StatusOK
 	if c.Status == StatusUnavailable {
-		code = http.StatusServiceUnavailable
+		code = http.StatusInternalServerError
 	}
+	
 	w.WriteHeader(code)
 	w.Write(data)
 }
@@ -170,7 +201,7 @@ func (h *Health) Measure(ctx context.Context) Check {
 
 	status := StatusOK
 	total := len(h.checks)
-	failures := make(map[string]string)
+	services := make(map[string]ServiceStatus)
 	resChan := make(chan checkResponse, total)
 	checkSpans := make(map[string]checkSpan)
 
@@ -201,7 +232,11 @@ func (h *Health) Measure(ctx context.Context) Check {
 		for {
 			select {
 			case <-time.After(c.Timeout):
-				failures[c.Name] = string(StatusTimeout)
+				services[c.Name] = ServiceStatus{
+					IsOk:      false,
+					Message:   "health check timed out",
+					Skippable: c.SkipOnErr,
+				}
 				status = getAvailability(status, c.SkipOnErr)
 
 				cs := checkSpans[c.Name]
@@ -213,10 +248,20 @@ func (h *Health) Measure(ctx context.Context) Check {
 				cs := checkSpans[res.name]
 
 				if res.err != nil {
-					failures[res.name] = res.err.Error()
+					services[res.name] = ServiceStatus{
+						IsOk:      false,
+						Message:   res.err.Error(),
+						Skippable: c.SkipOnErr,
+					}
 					status = getAvailability(status, res.skipOnErr)
 
 					cs.span.RecordError(res.err)
+				} else {
+					services[res.name] = ServiceStatus{
+						IsOk:      true,
+						Message:   "",
+						Skippable: c.SkipOnErr,
+					}
 				}
 
 				cs.span.End()
@@ -228,14 +273,15 @@ func (h *Health) Measure(ctx context.Context) Check {
 
 	span.SetAttributes(attribute.String("status", string(status)))
 
-	return newCheck(status, failures)
+	return newCheck(status, services)
 }
 
-func newCheck(s Status, failures map[string]string) Check {
+func newCheck(statusText Status, services map[string]ServiceStatus) Check {
 	return Check{
-		Status:    s,
+		IsOK:      statusText == StatusOK || statusText == StatusPartiallyAvailable,
+		Status:    statusText,
 		Timestamp: time.Now(),
-		Failures:  failures,
+		Services:  services,
 		System:    newSystemMetrics(),
 	}
 }
