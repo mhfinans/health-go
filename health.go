@@ -143,6 +143,9 @@ func (h *Health) LivenessHandler() http.Handler {
 func (h *Health) LivenessHandlerFunc(w http.ResponseWriter, r *http.Request) {
 	c := Liveness{IsOK: true}
 	data, err := json.Marshal(c)
+
+	w.Header().Add("Content-Type", "application/json")
+
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -162,6 +165,7 @@ func (h *Health) ReadinessHandlerFunc(w http.ResponseWriter, r *http.Request) {
 	c := h.Measure(r.Context())
 
 	w.Header().Set("Content-Type", "application/json")
+
 	data, err := json.Marshal(c)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
@@ -173,7 +177,8 @@ func (h *Health) ReadinessHandlerFunc(w http.ResponseWriter, r *http.Request) {
 	if c.Status == StatusUnavailable {
 		code = http.StatusInternalServerError
 	}
-	
+
+	w.Header().Add("Content-Type", "application/json")
 	w.WriteHeader(code)
 	w.Write(data)
 }
