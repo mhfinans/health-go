@@ -69,9 +69,12 @@ func New(config Config) func(ctx context.Context) error {
 		}
 
 		s, c, err := kafka.NewSimplePrebuiltConsumer(k, kafka.SimpleConsumerConfig{
-			Topics:              []string{topic},
-			LogIncomingMessages: false,
-			Logger:              nil,
+			SimplePrebuiltConsumerConfig: kafka.SimplePrebuiltConsumerConfig{
+				Topics:              []string{topic},
+				LogIncomingMessages: false,
+				Logger:              nil,
+				ErrorChannel:        nil,
+			},
 		}, cg)
 		if err != nil {
 			return fmt.Errorf("cannot create consumer %w", err)
