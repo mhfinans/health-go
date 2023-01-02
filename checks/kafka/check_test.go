@@ -2,7 +2,6 @@ package kafka
 
 import (
 	"context"
-	"github.com/Shopify/sarama"
 	"github.com/stretchr/testify/require"
 	"os"
 	"strings"
@@ -23,31 +22,6 @@ func TestNew(t *testing.T) {
 
 	err := check(context.Background())
 	require.NoError(t, err)
-}
-
-func TestEnsureConnectionIsClosed(t *testing.T) {
-	topic := "test-health-check-topic"
-	check := New(Config{
-		Bootstrap:       getBootstrap(t),
-		Version:         getVersion(t),
-		ServiceName:     "test-service",
-		Timeout:         30 * time.Second,
-		CustomTopicName: topic,
-	})
-
-	err := check(context.Background())
-	require.NoError(t, err)
-
-	admin, err := sarama.NewClusterAdmin(getBootstrap(t), sarama.NewConfig())
-	require.NoError(t, err)
-
-	defer admin.Close()
-	time.Sleep(time.Second * 1)
-	topicDetail, err := admin.DescribeTopics([]string{topic})
-	require.NoError(t, err)
-	require.Len(t, topicDetail, 1)
-	require.Error(t, topicDetail[0].Err)
-	require.Contains(t, topicDetail[0].Err.Error(), "does not exist")
 }
 
 func TestTimeout(t *testing.T) {

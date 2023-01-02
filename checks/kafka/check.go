@@ -5,7 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/Shopify/sarama"
-	"github.com/mhfinans/utility/v1/kafka"
+	"log"
 	"math/rand"
 	"sync"
 	"time"
@@ -44,40 +44,51 @@ func New(config Config) func(ctx context.Context) error {
 
 		kErr := make(chan error)
 		message := randStr(10)
+		kConfig := sarama.NewConfig()
 
-		k := kafka.NewKafka(kafka.Config{
-			Bootstrap: config.Bootstrap,
-			Version:   config.Version,
-		})
-
-		cConf := k.NewConsumerDefaultConfig()
-		cConf.Metadata.Timeout = config.Timeout
-		cConf.Net.WriteTimeout = config.Timeout
-		cConf.Net.DialTimeout = config.Timeout
-		cConf.Net.ReadTimeout = config.Timeout
-		cConf.Admin.Timeout = config.Timeout
-		cConf.Consumer.Offsets.Initial = sarama.OffsetNewest
-
-		admin, err := sarama.NewClusterAdmin(config.Bootstrap, cConf)
+		version, err := sarama.ParseKafkaVersion(config.Version)
 		if err != nil {
-			return fmt.Errorf("cannot create cluster admin %w", err)
+			log.Fatalln(err)
 		}
 
-		cg, err := k.NewConsumerWithConfig(groupId, cConf)
+		kConfig.Version = version
+		kConfig.Metadata.Timeout = config.Timeout
+		kConfig.Net.WriteTimeout = config.Timeout
+		kConfig.Net.DialTimeout = config.Timeout
+		kConfig.Net.ReadTimeout = config.Timeout
+		kConfig.Admin.Timeout = config.Timeout
+
+		kConfig.Consumer.Offsets.Initial = sarama.OffsetNewest
+		kConfig.Consumer.Offsets.AutoCommit.Enable = false
+
+		kConfig.Producer.RequiredAcks = sarama.WaitForAll
+		kConfig.Producer.Compression = sarama.CompressionSnappy
+		kConfig.Producer.Partitioner = sarama.NewRoundRobinPartitioner
+		kConfig.Producer.Retry.Max = 10
+		kConfig.Producer.Flush.Frequency = 500 * time.Millisecond
+		kConfig.Producer.Return.Successes = true
+		kConfig.Producer.Return.Errors = true
+
+		cg, err := sarama.NewConsumerGroup(config.Bootstrap, groupId, kConfig)
 		if err != nil {
 			return fmt.Errorf("cannot create consumer %w", err)
 		}
+		defer func(cg sarama.ConsumerGroup) {
+			err := cg.Close()
+			if err != nil {
+				fmt.Println("could not close consumer group:", err)
+			}
+		}(cg)
 
-		s, c, err := kafka.NewSimplePrebuiltConsumer(k, kafka.SimpleConsumerConfig{
-			SimplePrebuiltConsumerConfig: kafka.SimplePrebuiltConsumerConfig{
-				Topics:              []string{topic},
-				LogIncomingMessages: false,
-				Logger:              nil,
-				ErrorChannel:        nil,
-			},
-		}, cg)
-		if err != nil {
-			return fmt.Errorf("cannot create consumer %w", err)
+		c := &consumer{
+			consumerGroup:       cg,
+			topics:              []string{topic},
+			logIncomingMessages: false,
+			claimers:            make(map[string]MessageClaimer),
+			cleanupHooks:        make([]Hook, 0),
+			setupHooks:          make([]Hook, 0),
+			ready:               make(chan bool),
+			errorChan:           nil,
 		}
 
 		c.AddClaimer(topic, func(msg *sarama.ConsumerMessage) bool {
@@ -92,30 +103,17 @@ func New(config Config) func(ctx context.Context) error {
 			return true
 		})
 
-		c.AddCleanupHook(func(session sarama.ConsumerGroupSession) {
-			fmt.Println("running cleanup hook")
-
-			err := admin.DeleteTopic(topic)
-			if err != nil {
-				fmt.Printf("could not delete generated topic %s\n", err.Error())
-			}
-
-			err = admin.Close()
-			if err != nil {
-				fmt.Printf("could not close cluster admin connection. it can lead to goroutine leak. %s\n", err.Error())
-			}
-		})
-
 		closeChan := make(chan struct{})
 
 		wg := sync.WaitGroup{}
 		wg.Add(1)
-		go s.Listen(&wg, closeChan)
+		go c.Listen(&wg, closeChan)
 
-		p, err := k.NewSyncProducer()
+		p, err := sarama.NewSyncProducer(config.Bootstrap, kConfig)
 		if err != nil {
-			return fmt.Errorf("cannot create kafka producer %w", err)
+			return err
 		}
+
 		defer func(p sarama.SyncProducer) {
 			err := p.Close()
 			if err != nil {
